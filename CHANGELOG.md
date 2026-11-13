@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.3](https://github.com/kryptamine/herdr-auto-title/compare/v0.22.2...v0.22.3) (2026-11-13)
+
+
+### Bug Fixes
+
+* **mod:** open the install tab on this computer ([3638212](https://github.com/kryptamine/herdr-auto-title/commit/36382125353207e109df32f326f6b17731bf06df))
+
 ## [0.22.2](https://github.com/kryptamine/herdr-auto-title/compare/v0.22.1...v0.22.2) (2026-11-11)
 
 
