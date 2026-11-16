@@ -61,6 +61,9 @@ type terminal struct {
 	// Foreground is null for the first moments of a terminal, which decodes as
 	// no process at all.
 	Foreground herdr.PaneProcessInfoProcess `json:"foreground"`
+	// Status and Labels stand in for `ls` when the layout comes from the core.
+	Status *coreStatus       `json:"status"`
+	Labels map[string]string `json:"labels"`
 }
 
 // terminalPane is a pane and what its machine's core knows of it.

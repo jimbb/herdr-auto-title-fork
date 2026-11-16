@@ -30,6 +30,9 @@ const (
 type Client struct {
 	app  string
 	core string
+	// coreLayout reads and renames tabs in the core's layout document, for a
+	// machine whose core an app on another computer arranges.
+	coreLayout bool
 
 	mu sync.Mutex
 	// foregrounds is what each pane was running at the last snapshot.
@@ -47,16 +50,17 @@ var _ herdr.Client = (*Client)(nil)
 
 // New builds a client for this user's app and core. It performs no I/O: the
 // window comes and goes, and a poll finding it closed simply fails.
-func New(claudeDirs []string) (*Client, error) {
+func New(claudeDirs []string, coreLayout bool) (*Client, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("locate the home directory: %w", err)
 	}
 
 	return &Client{
-		app:      appSocketPath(home),
-		core:     coreSocketPath(home),
-		sessions: newSessionFinder(claudeDirs),
+		app:        appSocketPath(home),
+		core:       coreSocketPath(home),
+		coreLayout: coreLayout,
+		sessions:   newSessionFinder(claudeDirs),
 	}, nil
 }
 
@@ -72,31 +76,20 @@ func appSocketPath(home string) string {
 // starts an Auto Title for the desktop app, so this one must stay.
 func (*Client) Server() string { return "" }
 
-// Path is the app's socket, which is what names this session's claim.
-func (c *Client) Path() string { return c.app }
+// Path is the socket that names this session's claim: the app's, or the core's
+// when no app socket is read.
+func (c *Client) Path() string {
+	if c.coreLayout {
+		return c.core
+	}
+
+	return c.app
+}
 
 // Snapshot joins the app's view to the core's. What each pane runs is kept for
 // PaneProcesses: terminal.list already carries it, at no extra cost.
 func (c *Client) Snapshot(ctx context.Context) (herdr.Snapshot, error) {
-	var world world
-	if err := ask(ctx, c.app, map[string]bool{"ls": true}, &world); err != nil {
-		return herdr.Snapshot{}, err
-	}
-
-	if err := appError("ls", world.Error); err != nil {
-		return herdr.Snapshot{}, err
-	}
-
-	var status appStatus
-	if err := ask(ctx, c.app, map[string]bool{"status": true}, &status); err != nil {
-		return herdr.Snapshot{}, err
-	}
-
-	if err := appError("status", status.Error); err != nil {
-		return herdr.Snapshot{}, err
-	}
-
-	terminals, err := c.terminals(ctx)
+	world, focusedPane, terminals, err := c.read(ctx)
 	if err != nil {
 		return herdr.Snapshot{}, err
 	}
@@ -105,7 +98,7 @@ func (c *Client) Snapshot(ctx context.Context) (herdr.Snapshot, error) {
 	sessions := c.sessions.read(ctx, localPanesIn(spaces))
 
 	c.mu.Lock()
-	snapshot, foregrounds := c.build(spaces, status.FocusedPane, sessions)
+	snapshot, foregrounds := c.build(spaces, focusedPane, sessions)
 	c.foregrounds = foregrounds
 	c.mu.Unlock()
 
@@ -134,6 +127,10 @@ func (c *Client) PaneProcesses(
 }
 
 func (c *Client) RenameTab(ctx context.Context, tabID, label string) error {
+	if c.coreLayout {
+		return c.renameInDocument(ctx, tabID, label)
+	}
+
 	request := map[string]any{
 		"do":   "tab.rename",
 		"args": map[string]string{"id": tabID, "name": label},
@@ -152,6 +149,43 @@ func (c *Client) RenameTab(ctx context.Context, tabID, label string) error {
 	}
 
 	return appError("tab.rename", reply.Error)
+}
+
+// read is the layout, the focused pane and the core's terminals. The document
+// knows no focus: that lives in a window.
+func (c *Client) read(ctx context.Context) (world, string, []terminal, error) {
+	if c.coreLayout {
+		terminals, err := c.terminals(ctx)
+		if err != nil {
+			return world{}, "", nil, err
+		}
+
+		world, err := c.documentWorld(ctx, terminals)
+
+		return world, "", terminals, err
+	}
+
+	var world world
+	if err := ask(ctx, c.app, map[string]bool{"ls": true}, &world); err != nil {
+		return world, "", nil, err
+	}
+
+	if err := appError("ls", world.Error); err != nil {
+		return world, "", nil, err
+	}
+
+	var status appStatus
+	if err := ask(ctx, c.app, map[string]bool{"status": true}, &status); err != nil {
+		return world, "", nil, err
+	}
+
+	if err := appError("status", status.Error); err != nil {
+		return world, "", nil, err
+	}
+
+	terminals, err := c.terminals(ctx)
+
+	return world, status.FocusedPane, terminals, err
 }
 
 // errRefused is the app's answer that it will not do what was asked, as
@@ -173,29 +207,13 @@ func appError(request, message string) error {
 }
 
 func (c *Client) terminals(ctx context.Context) ([]terminal, error) {
-	request := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "terminal.list",
-		"params":  map[string]any{},
+	var listed struct {
+		Terminals []terminal `json:"terminals"`
 	}
 
-	var reply struct {
-		Result struct {
-			Terminals []terminal `json:"terminals"`
-		} `json:"result"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-
-	if err := ask(ctx, c.core, request, &reply); err != nil {
+	if err := rpc(ctx, c.core, "terminal.list", map[string]any{}, &listed); err != nil {
 		return nil, err
 	}
 
-	if reply.Error != nil {
-		return nil, fmt.Errorf("terminal.list: %s", reply.Error.Message)
-	}
-
-	return reply.Result.Terminals, nil
+	return listed.Terminals, nil
 }
