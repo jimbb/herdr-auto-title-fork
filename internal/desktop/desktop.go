@@ -30,8 +30,7 @@ const (
 type Client struct {
 	app  string
 	core string
-	// coreLayout reads and renames tabs in the core's layout document, for a
-	// machine whose core an app on another computer arranges.
+	// coreLayout uses the core's layout document and terminal labels.
 	coreLayout bool
 
 	mu sync.Mutex
@@ -128,7 +127,7 @@ func (c *Client) PaneProcesses(
 
 func (c *Client) RenameTab(ctx context.Context, tabID, label string) error {
 	if c.coreLayout {
-		return c.renameInDocument(ctx, tabID, label)
+		return c.renameCoreTab(ctx, tabID, label)
 	}
 
 	request := map[string]any{
